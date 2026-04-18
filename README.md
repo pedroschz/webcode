@@ -64,6 +64,25 @@ Open http://localhost:3000. First load fetches Pyodide + numpy + Pillow + reedso
 - Decoder is robust to rotation and mild perspective (camera from a reasonable angle). Extreme tilt or partial occlusion is out of scope.
 - No live webcam capture yet — upload a photo.
 
+## Contributing
+
+**Webcode is open-source and contributions are genuinely welcome.** This is a first usable implementation, not a finished system — there's a lot of useful work left, and small PRs are as welcome as big ones.
+
+Some directions that would move the project forward:
+
+- **Live webcam decoding** in the web app (`getUserMedia` + frame loop).
+- **Extreme-perspective robustness** — current decoder handles mild tilt; fixing steep angles needs either 4 real anchor points or iterative refinement against the fiducial pattern.
+- **Bigger versions** (V2/V3 with 16×16 or 20×20 grids) for longer URLs, with version encoded in the format modules.
+- **Masking** to avoid pathological color distributions (e.g. a mostly-white code that triggers calibration issues), analogous to QR data masks.
+- **Native TypeScript port** of the codec so the web app doesn't need Pyodide (~15 MB first load).
+- **Mobile apps** (iOS / Android) that decode from the camera. Native CoreImage / MLKit detectors can do the localization step far faster than the Python reference.
+- **Benchmarks** vs QR across URL lengths, print sizes, lighting conditions, and scan angles.
+- **Security review.** Scannable codes are a phishing vector; thinking about URL display / domain highlighting at decode time is worthwhile.
+
+If you want to work on something, open an issue first so we can sanity-check the direction. PRs without a corresponding issue are still welcome for small fixes (typos, bugs, doc clarifications).
+
+No CLA. By contributing you agree your changes are released under the MIT license below.
+
 ## License
 
-MIT. If you build on this, a citation back to the original paper is appreciated.
+MIT — see [LICENSE](LICENSE). Use it for anything, including commercially. If you build on this, a citation back to the original 2023 paper by Pedro Sánchez-Gil Galindo is appreciated but not required.
