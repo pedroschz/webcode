@@ -2,7 +2,7 @@
 
 URL-specialized scannable codes. An 8-color palette (3 bits per module) plus a 6-bit URL alphabet and prefix-dictionary compression packs more data per unit area than a QR code, for the single use case people actually scan in 2026: opening a URL.
 
-Based on the 2023 paper [*Decoding Efficiency: The Next Generation of Scannable Systems*](https://drive.google.com/file/d/1-3EZ7VpKjN5rB6MF5F2J8wKxTcO6JOPw/view) by Pedro Sánchez-Gil Galindo. The architecture here updates the paper's proposal with modern decisions.
+Based on the 2023 paper [*Decoding Efficiency: The Next Generation of Scannable Systems*](https://drive.google.com/file/d/1LRFoS0TezDiaeAeC8wYWnzELM_cvsXGG/view) by Pedro Sánchez-Gil Galindo. The architecture here updates the paper's proposal with modern decisions.
 
 ## What's kept from the paper
 
