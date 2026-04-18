@@ -1,7 +1,7 @@
 "use client";
 
 // Shared Pyodide loader. Loads once, installs reedsolo via micropip,
-// fetches /webcode.py from /public, and executes it to define encode/decode.
+// and executes the bundled python code to define encode/decode.
 
 declare global {
   interface Window {
@@ -12,6 +12,8 @@ declare global {
 
 const PYODIDE_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js";
 const INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
+
+import { webcodePySrc } from "./webcode-src";
 
 export function loadWebcodeRuntime(): Promise<any> {
   if (typeof window === "undefined") return Promise.reject(new Error("SSR"));
@@ -33,11 +35,7 @@ export function loadWebcodeRuntime(): Promise<any> {
 import micropip
 await micropip.install("reedsolo")
 `);
-    const src = await fetch("/webcode.txt").then((r) => {
-      if (!r.ok) throw new Error("Failed to fetch webcode.txt");
-      return r.text();
-    });
-    py.runPython(src);
+    py.runPython(webcodePySrc);
     return py;
   })();
   return window.__webcodePyodide;
