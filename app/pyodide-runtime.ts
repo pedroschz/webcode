@@ -1,7 +1,8 @@
 "use client";
 
 // Shared Pyodide loader. Loads once, installs reedsolo via micropip,
-// and executes the bundled python code to define encode/decode.
+// and executes BOTH codec variants (square + hex) into separate
+// Python namespaces so they don't clobber each other's globals.
 
 declare global {
   interface Window {
@@ -13,7 +14,9 @@ declare global {
 const PYODIDE_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js";
 const INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
 
-import { webcodePySrc } from "./webcode-src";
+import { webcodePySrc, webcodeHexPySrc } from "./webcode-src";
+
+export type Variant = "square" | "hex";
 
 export function loadWebcodeRuntime(): Promise<any> {
   if (typeof window === "undefined") return Promise.reject(new Error("SSR"));
@@ -35,7 +38,31 @@ export function loadWebcodeRuntime(): Promise<any> {
 import micropip
 await micropip.install("reedsolo")
 `);
-    py.runPython(webcodePySrc);
+    py.globals.set("_wc_sq_src", webcodePySrc);
+    py.globals.set("_wc_hex_src", webcodeHexPySrc);
+    py.runPython(`
+sq_ns = {"__name__": "webcode_sq"}
+hex_ns = {"__name__": "webcode_hex"}
+exec(_wc_sq_src, sq_ns)
+exec(_wc_hex_src, hex_ns)
+
+def wc_encode(url, path, variant):
+    mod = sq_ns if variant == "square" else hex_ns
+    return mod["encode_url"](url, path)
+
+def wc_decode(path, variant):
+    mod = sq_ns if variant == "square" else hex_ns
+    return mod["decode_image"](path)
+
+def wc_decode_auto(path):
+    errs = []
+    for name, mod in (("hex", hex_ns), ("square", sq_ns)):
+        try:
+            return mod["decode_image"](path), name
+        except Exception as e:
+            errs.append(f"{name}: {e}")
+    raise ValueError("; ".join(errs))
+`);
     return py;
   })();
   return window.__webcodePyodide;

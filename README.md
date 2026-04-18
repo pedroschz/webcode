@@ -62,15 +62,22 @@ The repo ships two codecs that share the same compression and error-correction p
 
 ## Usage — Web app
 
-A Next.js site under [`web/`](web/) runs the Python codec in the browser via Pyodide. Generate codes or decode uploaded images.
+A Next.js site at the repo root runs the Python codec in the browser via Pyodide. Generate codes or decode uploaded images, with a variant toggle between the square and hexagonal layouts.
 
 ```bash
-cd web
 npm install
 npm run dev
 ```
 
 Open http://localhost:3000. First load fetches Pyodide + numpy + Pillow + reedsolo (~15 MB), cached afterward.
+
+Deploying to Vercel: just point it at this repo — Next.js is detected from the root `package.json`, no root-directory setting needed.
+
+The Python codec sources are bundled into the web build via [`scripts/gen_src_ts.py`](scripts/gen_src_ts.py), which writes [`app/webcode-src.ts`](app/webcode-src.ts). Re-run it after editing either `.py` file:
+
+```bash
+python3 scripts/gen_src_ts.py
+```
 
 ## Limits
 

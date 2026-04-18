@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { loadWebcodeRuntime } from "./pyodide-runtime";
+import { loadWebcodeRuntime, type Variant } from "./pyodide-runtime";
 
 type Status = "loading" | "ready" | "error";
 
 export default function Home() {
   const [status, setStatus] = useState<Status>("loading");
   const [err, setErr] = useState<string>("");
+  const [variant, setVariant] = useState<Variant>("square");
   const pyRef = useRef<any>(null);
 
   useEffect(() => {
@@ -31,21 +32,51 @@ export default function Home() {
           Reed&ndash;Solomon ECC. Generate one or decode an image.
         </p>
         <p style={{ color: "#888", fontSize: 13, marginTop: 8 }}>
-          Runtime: {status === "loading" && "loading Python script…"}
+          Runtime: {status === "loading" && "loading Python…"}
           {status === "ready" && <span style={{ color: "#0a7" }}>ready</span>}
           {status === "error" && <span style={{ color: "#c33" }}>error: {err}</span>}
         </p>
       </header>
 
-      <GeneratePanel pyRef={pyRef} ready={status === "ready"} />
+      <VariantTabs value={variant} onChange={setVariant} />
+      <div style={{ height: 16 }} />
+
+      <GeneratePanel pyRef={pyRef} ready={status === "ready"} variant={variant} />
       <div style={{ height: 40 }} />
       <DecodePanel pyRef={pyRef} ready={status === "ready"} />
 
       <footer style={{ marginTop: 64, color: "#999", fontSize: 12, textAlign: "center" }}>
         Based on the 2023 paper &ldquo;Decoding Efficiency: The Next Generation
-        of Scannable Systems&rdquo; &mdash; architecture updated 2026.
+        of Scannable Systems&rdquo; &mdash; architecture updated 2026. &middot;{" "}
+        <a href="https://github.com/pedroschz/webcode" style={{ color: "#999" }}>
+          source
+        </a>
       </footer>
     </main>
+  );
+}
+
+function VariantTabs({ value, onChange }: { value: Variant; onChange: (v: Variant) => void }) {
+  const tab = (v: Variant, label: string, sub: string) => (
+    <button
+      key={v}
+      onClick={() => onChange(v)}
+      style={{
+        flex: 1, padding: "12px 16px", textAlign: "left",
+        background: value === v ? "white" : "transparent",
+        border: value === v ? "1px solid #111" : "1px solid #e5e5e5",
+        borderRadius: 10, cursor: "pointer",
+      }}
+    >
+      <div style={{ fontSize: 14, fontWeight: 600 }}>{label}</div>
+      <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>{sub}</div>
+    </button>
+  );
+  return (
+    <div style={{ display: "flex", gap: 8 }}>
+      {tab("square", "Square 12×12", "144 modules · 28 data bytes · simpler geometry")}
+      {tab("hex", "Hexagonal 216-triangle", "paper's original shape · MP alphabet · 40 data bytes")}
+    </div>
   );
 }
 
@@ -61,8 +92,8 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
-function GeneratePanel({ pyRef, ready }: { pyRef: any; ready: boolean }) {
-  const [url, setUrl] = useState("https://github.com/anthropics/claude-code");
+function GeneratePanel({ pyRef, ready, variant }: { pyRef: any; ready: boolean; variant: Variant }) {
+  const [url, setUrl] = useState("https://github.com/pedroschz/webcode");
   const [imgSrc, setImgSrc] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -73,9 +104,9 @@ function GeneratePanel({ pyRef, ready }: { pyRef: any; ready: boolean }) {
     try {
       const py = pyRef.current;
       py.globals.set("_user_url", url);
-      py.runPython(`encode_url(_user_url, "/tmp/_out.png")`);
+      py.globals.set("_user_variant", variant);
+      py.runPython(`wc_encode(_user_url, "/tmp/_out.png", _user_variant)`);
       const bytes: Uint8Array = py.FS.readFile("/tmp/_out.png");
-      // Copy into a fresh ArrayBuffer to satisfy Blob constructor typing.
       const buf = new Uint8Array(bytes.byteLength);
       buf.set(bytes);
       const blob = new Blob([buf], { type: "image/png" });
@@ -115,11 +146,12 @@ function GeneratePanel({ pyRef, ready }: { pyRef: any; ready: boolean }) {
       {imgSrc && (
         <div style={{ marginTop: 20, textAlign: "center" }}>
           <img src={imgSrc} alt="webcode" style={{
-            imageRendering: "pixelated", maxWidth: 420, width: "100%",
+            imageRendering: variant === "square" ? "pixelated" : "auto",
+            maxWidth: 420, width: "100%",
             border: "1px solid #eee", borderRadius: 8,
           }} />
           <div style={{ marginTop: 8 }}>
-            <a href={imgSrc} download="webcode.png" style={{ fontSize: 13 }}>
+            <a href={imgSrc} download={`webcode-${variant}.png`} style={{ fontSize: 13 }}>
               Download PNG
             </a>
           </div>
@@ -131,13 +163,14 @@ function GeneratePanel({ pyRef, ready }: { pyRef: any; ready: boolean }) {
 
 function DecodePanel({ pyRef, ready }: { pyRef: any; ready: boolean }) {
   const [result, setResult] = useState("");
+  const [detected, setDetected] = useState<string>("");
   const [preview, setPreview] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function handleFile(f: File) {
     if (!pyRef.current || busy) return;
-    setBusy(true); setErr(""); setResult("");
+    setBusy(true); setErr(""); setResult(""); setDetected("");
     try {
       const ab = await f.arrayBuffer();
       setPreview(URL.createObjectURL(f));
@@ -146,8 +179,13 @@ function DecodePanel({ pyRef, ready }: { pyRef: any; ready: boolean }) {
       const path = `/tmp/_in.${ext}`;
       py.FS.writeFile(path, new Uint8Array(ab));
       py.globals.set("_user_path", path);
-      const url: string = py.runPython(`decode_image(_user_path)`);
+      // wc_decode_auto returns (url, variant_name) as a Python tuple → PyProxy
+      const tuple: any = py.runPython(`wc_decode_auto(_user_path)`);
+      const url = tuple.get(0);
+      const variantName = tuple.get(1);
+      tuple.destroy?.();
       setResult(url);
+      setDetected(variantName);
     } catch (e: any) {
       setErr(e?.message || String(e));
     } finally {
@@ -157,6 +195,9 @@ function DecodePanel({ pyRef, ready }: { pyRef: any; ready: boolean }) {
 
   return (
     <Panel title="Decode">
+      <p style={{ color: "#666", fontSize: 13, marginTop: 0, marginBottom: 10 }}>
+        Upload any webcode image (square or hex — variant auto-detected).
+      </p>
       <input
         type="file"
         accept="image/*"
@@ -168,8 +209,7 @@ function DecodePanel({ pyRef, ready }: { pyRef: any; ready: boolean }) {
         style={{ fontSize: 14 }}
       />
       <p style={{ color: "#888", fontSize: 12, marginTop: 6, marginBottom: 0 }}>
-        Pick a PNG generated above or a photo. For photos: plain background,
-        roughly square framing, mild rotation OK.
+        For photos: plain background, roughly centered, mild rotation OK.
       </p>
       {preview && (
         <div style={{ marginTop: 16 }}>
@@ -182,7 +222,9 @@ function DecodePanel({ pyRef, ready }: { pyRef: any; ready: boolean }) {
       {err && <p style={{ color: "#c33", fontSize: 13, marginTop: 10 }}>Error: {err}</p>}
       {result && (
         <div style={{ marginTop: 16 }}>
-          <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Decoded URL:</div>
+          <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>
+            Decoded URL {detected && <span>({detected} variant)</span>}:
+          </div>
           <a href={result} target="_blank" rel="noreferrer" style={{
             fontSize: 15, wordBreak: "break-all",
           }}>
