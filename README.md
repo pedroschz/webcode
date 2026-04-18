@@ -36,14 +36,28 @@ URL → dictionary compress → 6-bit symbols → bytes → RS encode
 
 Decode reverses, plus: locate code in image (saturation mask + largest connected blob), infer 4th corner from the other three (BR has no fiducial), solve homography, sample each cell, calibrate per-channel color thresholds from fiducial pixels, classify.
 
+## Two variants
+
+The repo ships two codecs that share the same compression and error-correction pipeline but differ in shape:
+
+- [`webcode.py`](webcode.py) — 12×12 **square** grid. 144 modules, 28 data + 15 ECC bytes. Simpler geometry; best for most uses.
+- [`webcode_hex.py`](webcode_hex.py) — **hexagonal** layout of 216 triangular modules (the original paper's shape). 3 fiducial "petals" at alternating corners. 40 data + 28 ECC bytes — higher capacity, and also uses the paper's **MP character table** and **`^`-key phrases** verbatim (e.g. `^&apple^*mx/iphone-15` ↔ `https://www.apple.com/mx/iphone-15`).
+
 ## Usage — Python
 
 ```bash
 # macOS system Python has Pillow + numpy preinstalled
 /usr/bin/pip3 install --user reedsolo
+
+# Square 12×12 variant
 /usr/bin/python3 webcode.py                                    # round-trip demo
 /usr/bin/python3 webcode.py encode "https://example.com" out.png
 /usr/bin/python3 webcode.py decode out.png
+
+# Hexagonal 216-triangle variant (paper's original shape, MP alphabet)
+/usr/bin/python3 webcode_hex.py
+/usr/bin/python3 webcode_hex.py encode "https://example.com" out.png
+/usr/bin/python3 webcode_hex.py decode out.png
 ```
 
 ## Usage — Web app
