@@ -33,8 +33,8 @@ export function loadWebcodeRuntime(): Promise<any> {
 import micropip
 await micropip.install("reedsolo")
 `);
-    const src = await fetch("/webcode.py").then((r) => {
-      if (!r.ok) throw new Error("Failed to fetch webcode.py");
+    const src = await fetch("/webcode.txt").then((r) => {
+      if (!r.ok) throw new Error("Failed to fetch webcode.txt");
       return r.text();
     });
     py.runPython(src);

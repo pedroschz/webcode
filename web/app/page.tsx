@@ -31,7 +31,7 @@ export default function Home() {
           Reed&ndash;Solomon ECC. Generate one or decode an image.
         </p>
         <p style={{ color: "#888", fontSize: 13, marginTop: 8 }}>
-          Runtime: {status === "loading" && "loading Python + webcode.py…"}
+          Runtime: {status === "loading" && "loading Python script…"}
           {status === "ready" && <span style={{ color: "#0a7" }}>ready</span>}
           {status === "error" && <span style={{ color: "#c33" }}>error: {err}</span>}
         </p>
