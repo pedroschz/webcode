@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Webcode Hex Layout Editor</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  background: #f0f0f0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+header {
+  background: white;
+  border-bottom: 1px solid #ddd;
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+header h1 { font-size: 15px; font-weight: 600; }
+#status-bar {
+  font-size: 12px;
+  color: #666;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Layout ── */
+.workspace {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Toolbar ── */
+#toolbar {
+  width: 168px;
+  background: white;
+  border-right: 1px solid #ddd;
+  padding: 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #aaa;
+  margin-bottom: 6px;
+}
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
+}
+.swatch {
+  aspect-ratio: 1;
+  border-radius: 5px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  transition: transform 0.08s;
+}
+.swatch:hover { transform: scale(1.08); }
+.swatch.active {
+  border-color: #222;
+  box-shadow: 0 0 0 1px #222;
+}
+.swatch .label {
+  position: absolute;
+  bottom: 1px;
+  right: 2px;
+  font-size: 8px;
+  pointer-events: none;
+}
+.special-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.special-swatch {
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  font-size: 12px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  transition: background 0.1s;
+}
+.special-swatch:hover { filter: brightness(0.96); }
+.special-swatch.active { border-color: #222; box-shadow: 0 0 0 1px #222; }
+.special-swatch .dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.buffer-sw .dot { background: #f0f0f0; border: 1px dashed #bbb; }
+.payload-sw .dot { background: #dce6ff; border: 1px solid #aabcff; }
+
+.key-hint {
+  font-size: 10px;
+  color: #bbb;
+  line-height: 1.8;
+}
+kbd {
+  display: inline-block;
+  background: #f4f4f4;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  padding: 0 3px;
+  font-size: 9px;
+  font-family: monospace;
+}
+
+/* ── Canvas ── */
+#canvas-area {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  overflow: hidden;
+}
+#hex-svg {
+  user-select: none;
+  cursor: crosshair;
+  filter: drop-shadow(0 6px 24px rgba(0,0,0,0.13));
+  background: white;
+  border-radius: 10px;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+/* ── Info panel ── */
+#info-panel {
+  width: 200px;
+  background: white;
+  border-left: 1px solid #ddd;
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.info-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #aaa;
+  margin-bottom: 6px;
+}
+#hover-detail {
+  font-size: 12px;
+  color: #444;
+  line-height: 1.7;
+  min-height: 56px;
+}
+#count-table {
+  font-size: 12px;
+  width: 100%;
+  border-collapse: collapse;
+}
+#count-table td { padding: 2px 0; }
+#count-table td:last-child { text-align: right; color: #555; }
+.count-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+
+#export-btn {
+  padding: 10px;
+  background: #111;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 500;
+  margin-top: auto;
+}
+#export-btn:hover { background: #333; }
+
+#schema-area { display: none; flex-direction: column; gap: 6px; }
+#schema-output {
+  width: 100%;
+  height: 180px;
+  font-size: 10px;
+  font-family: monospace;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 8px;
+  resize: vertical;
+  background: #fafafa;
+}
+#copy-btn {
+  padding: 8px;
+  background: #1a9;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 500;
+}
+#copy-btn:hover { background: #17855; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Webcode Hex Layout Editor</h1>
+  <span id="status-bar">Hover over a triangle · click or drag to paint</span>
+</header>
+
+<div class="workspace">
+
+  <!-- ── Toolbar ── -->
+  <div id="toolbar">
+    <div>
+      <div class="section-label">Data colors (fixed)</div>
+      <div class="color-grid" id="color-swatches"></div>
+    </div>
+
+    <div>
+      <div class="section-label">Special roles</div>
+      <div class="special-tools">
+        <div class="special-swatch buffer-sw" data-tool="buffer">
+          <span class="dot"></span>Buffer
+        </div>
+        <div class="special-swatch payload-sw active" data-tool="payload">
+          <span class="dot"></span>Payload
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">Shortcuts</div>
+      <div class="key-hint">
+        <kbd>0</kbd>–<kbd>7</kbd> colors<br>
+        <kbd>B</kbd> buffer<br>
+        <kbd>P</kbd> payload<br>
+        <kbd>Ctrl Z</kbd> undo
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SVG canvas ── -->
+  <div id="canvas-area">
+    <svg id="hex-svg" viewBox="0 0 600 600" width="580" height="580"></svg>
+  </div>
+
+  <!-- ── Info panel ── -->
+  <div id="info-panel">
+    <div>
+      <div class="info-label">Hovered triangle</div>
+      <div id="hover-detail">—</div>
+    </div>
+
+    <div>
+      <div class="info-label">Layout counts</div>
+      <table id="count-table"><tbody></tbody></table>
+    </div>
+
+    <button id="export-btn">Export schema →</button>
+
+    <div id="schema-area">
+      <textarea id="schema-output" readonly></textarea>
+      <button id="copy-btn">Copy to clipboard</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// Geometry — exact port of webcode_hex.py all_triangles()
+// ═══════════════════════════════════════════════════════
+const S = 8;
+
+function lerp(a, b, t) {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
+function* sectorTriangles(apex, v1, v2) {
+  for (let k = 0; k < S; k++) {
+    let U;
+    if (k === 0) {
+      U = [apex];
+    } else {
+      const Ua = lerp(apex, v1, k / S);
+      const Ub = lerp(apex, v2, k / S);
+      U = Array.from({ length: k + 1 }, (_, i) => lerp(Ua, Ub, i / k));
+    }
+    const La = lerp(apex, v1, (k + 1) / S);
+    const Lb = lerp(apex, v2, (k + 1) / S);
+    const L = Array.from({ length: k + 2 }, (_, i) => lerp(La, Lb, i / (k + 1)));
+    for (let t = 0; t < 2 * k + 1; t++) {
+      const i = Math.floor(t / 2);
+      if (t % 2 === 0) yield [L[i], L[i + 1], U[i]];
+      else               yield [U[i], L[i + 1], U[i + 1]];
+    }
+  }
+}
+
+function allTriangles(cx, cy, R) {
+  const tris = [];
+  for (let s = 0; s < 6; s++) {
+    const a1 = Math.PI / 180 * (30 + s * 60);
+    const a2 = Math.PI / 180 * (30 + (s + 1) * 60);
+    const v1 = [cx + R * Math.cos(a1), cy - R * Math.sin(a1)];
+    const v2 = [cx + R * Math.cos(a2), cy - R * Math.sin(a2)];
+    for (const tri of sectorTriangles([cx, cy], v1, v2)) tris.push(tri);
+  }
+  return tris;
+}
+
+// Decode linear idx → (sector, row, t)
+function idxToSRT(idx) {
+  const s = Math.floor(idx / 64);
+  const ws = idx % 64;
+  let k = Math.floor(Math.sqrt(ws));
+  while ((k + 1) * (k + 1) <= ws) k++;
+  while (k > 0 && k * k > ws) k--;
+  return { s, k, t: ws - k * k };
+}
+
+// ═══════════════════════════════════════
+// Palette & visual constants
+// ═══════════════════════════════════════
+const PALETTE_HEX = [
+  '#000000', // 0 black
+  '#ff0000', // 1 red
+  '#00cc00', // 2 green
+  '#0055ff', // 3 blue
+  '#ffdd00', // 4 yellow
+  '#00ddff', // 5 cyan
+  '#ff00ff', // 6 magenta
+  '#ffffff', // 7 white
+];
+const PALETTE_LABELS = ['Black','Red','Green','Blue','Yellow','Cyan','Magenta','White'];
+const LABEL_DARK = [true, false, false, false, false, false, false, false]; // dark text on light bg?
+
+const PAYLOAD_FILL   = '#dce6ff';
+const PAYLOAD_STROKE = '#b8c8ff';
+const BUFFER_FILL    = '#f4f4f4';
+const BUFFER_STROKE  = '#cccccc';
+
+// ═══════════════════════════════════════
+// State
+// ═══════════════════════════════════════
+// state[idx] = null (payload) | 0-7 (fixed palette color) | 'buffer'
+const state = new Array(384).fill(null);
+let currentTool = 'payload';
+let painting = false;
+const history = []; // [{idx, prev}]
+
+// ═══════════════════════════════════════
+// Build toolbar swatches
+// ═══════════════════════════════════════
+const colorGrid = document.getElementById('color-swatches');
+PALETTE_HEX.forEach((hex, i) => {
+  const sw = document.createElement('div');
+  sw.className = 'swatch';
+  sw.dataset.tool = String(i);
+  sw.title = `${i}: ${PALETTE_LABELS[i]}`;
+  sw.style.background = hex;
+  if (i === 7) sw.style.border = '2px solid #ddd'; // white needs border
+  const lbl = document.createElement('span');
+  lbl.className = 'label';
+  lbl.textContent = i;
+  lbl.style.color = i === 7 ? '#bbb' : i === 4 ? '#888' : '#fff';
+  sw.appendChild(lbl);
+  colorGrid.appendChild(sw);
+});
+
+function setTool(tool) {
+  currentTool = tool;
+  document.querySelectorAll('.swatch, .special-swatch').forEach(sw => {
+    sw.classList.toggle('active', sw.dataset.tool === String(tool));
+  });
+}
+
+document.querySelectorAll('.swatch').forEach(sw => {
+  sw.addEventListener('mousedown', e => { e.preventDefault(); setTool(parseInt(sw.dataset.tool)); });
+});
+document.querySelectorAll('.special-swatch').forEach(sw => {
+  sw.addEventListener('mousedown', e => { e.preventDefault(); setTool(sw.dataset.tool); });
+});
+
+setTool('payload');
+
+// ═══════════════════════════════════════
+// Build SVG
+// ═══════════════════════════════════════
+const svg    = document.getElementById('hex-svg');
+const CX = 300, CY = 300, R = 282;
+const triangles = allTriangles(CX, CY, R);
+const pathEls   = [];
+
+function triColors(idx) {
+  const v = state[idx];
+  if (v === null)      return [PAYLOAD_FILL, PAYLOAD_STROKE, ''];
+  if (v === 'buffer')  return [BUFFER_FILL, BUFFER_STROKE, '4,3'];
+  const fill = PALETTE_HEX[v];
+  // white data cell: draw with thin gray stroke so it's distinguishable from buffer
+  const stroke = v === 7 ? '#ccc' : fill;
+  return [fill, stroke, ''];
+}
+
+function triPath(pts) {
+  return pts.map(([x, y], j) => `${j === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`).join(' ') + ' Z';
+}
+
+// Build all path elements at once (fast — 384 elements)
+const frag = document.createDocumentFragment();
+triangles.forEach((pts, idx) => {
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  p.setAttribute('d', triPath(pts));
+  p.dataset.idx = idx;
+  applyColors(p, idx);
+  frag.appendChild(p);
+  pathEls.push(p);
+});
+svg.appendChild(frag);
+
+function applyColors(el, idx) {
+  const [fill, stroke, dash] = triColors(idx);
+  el.setAttribute('fill', fill);
+  el.setAttribute('stroke', stroke);
+  el.setAttribute('stroke-width', dash ? '1' : '0.5');
+  if (dash) el.setAttribute('stroke-dasharray', dash);
+  else      el.removeAttribute('stroke-dasharray');
+}
+
+// ═══════════════════════════════════════
+// Paint logic
+// ═══════════════════════════════════════
+function paint(idx) {
+  const prev = state[idx];
+  const next = currentTool === 'payload' ? null
+             : currentTool === 'buffer'  ? 'buffer'
+             : currentTool; // 0-7
+  if (prev === next) return;
+  history.push({ idx, prev });
+  state[idx] = next;
+  applyColors(pathEls[idx], idx);
+  updateStats();
+}
+
+// ─ Mouse events on SVG paths ─
+svg.addEventListener('mousedown', e => {
+  const idx = e.target.dataset?.idx;
+  if (idx == null) return;
+  e.preventDefault();
+  painting = true;
+  paint(Number(idx));
+});
+
+svg.addEventListener('mousemove', e => {
+  const idx = e.target.dataset?.idx;
+  if (idx == null) {
+    updateHover(null);
+    return;
+  }
+  updateHover(Number(idx));
+  if (painting) paint(Number(idx));
+});
+
+svg.addEventListener('mouseleave', () => {
+  painting = false;
+  updateHover(null);
+});
+
+window.addEventListener('mouseup', () => { painting = false; });
+
+// ═══════════════════════════════════════
+// Hover info
+// ═══════════════════════════════════════
+function roleName(idx) {
+  const v = state[idx];
+  if (v === null)     return 'payload';
+  if (v === 'buffer') return 'buffer (white)';
+  return `fixed color ${v} — ${PALETTE_LABELS[v]}`;
+}
+
+function updateHover(idx) {
+  const el = document.getElementById('hover-detail');
+  const sb = document.getElementById('status-bar');
+  if (idx === null) {
+    el.textContent = '—';
+    sb.textContent = 'Hover over a triangle · click or drag to paint';
+    return;
+  }
+  const { s, k, t } = idxToSRT(idx);
+  el.innerHTML = `<b>#${idx}</b><br>Sector ${s} · Row ${k} · T${t}<br>${roleName(idx)}`;
+  sb.textContent = `#${idx}  S${s} R${k} T${t}  →  ${roleName(idx)}`;
+}
+
+// ═══════════════════════════════════════
+// Stats
+// ═══════════════════════════════════════
+function updateStats() {
+  const counts = new Array(8).fill(0);
+  let bufferCount = 0, payloadCount = 0;
+  state.forEach(v => {
+    if (v === null)      payloadCount++;
+    else if (v === 'buffer') bufferCount++;
+    else counts[v]++;
+  });
+
+  const tbody = document.querySelector('#count-table tbody');
+  const rows = [];
+
+  // colors with non-zero count
+  counts.forEach((c, i) => {
+    if (c === 0) return;
+    rows.push(`<tr>
+      <td><span class="count-dot" style="background:${PALETTE_HEX[i]};${i===7?'border:1px solid #ddd':''}"></span>${PALETTE_LABELS[i]}</td>
+      <td>${c}</td>
+    </tr>`);
+  });
+
+  rows.push(`<tr>
+    <td><span class="count-dot" style="background:${BUFFER_FILL};border:1px dashed #bbb"></span>Buffer</td>
+    <td>${bufferCount}</td>
+  </tr>`);
+
+  rows.push(`<tr>
+    <td><span class="count-dot" style="background:${PAYLOAD_FILL};border:1px solid ${PAYLOAD_STROKE}"></span>Payload</td>
+    <td>${payloadCount}</td>
+  </tr>`);
+
+  rows.push(`<tr style="border-top:1px solid #eee;font-weight:600">
+    <td>Total</td><td>384</td>
+  </tr>`);
+
+  tbody.innerHTML = rows.join('');
+}
+
+updateStats();
+
+// ═══════════════════════════════════════
+// Keyboard shortcuts
+// ═══════════════════════════════════════
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'TEXTAREA') return;
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+    e.preventDefault();
+    const entry = history.pop();
+    if (entry) {
+      state[entry.idx] = entry.prev;
+      applyColors(pathEls[entry.idx], entry.idx);
+      updateStats();
+    }
+    return;
+  }
+  if (e.key >= '0' && e.key <= '7' && !e.ctrlKey && !e.metaKey) setTool(parseInt(e.key));
+  if (e.key === 'b' || e.key === 'B') setTool('buffer');
+  if (e.key === 'p' || e.key === 'P') setTool('payload');
+});
+
+// ═══════════════════════════════════════
+// Export
+// ═══════════════════════════════════════
+document.getElementById('export-btn').addEventListener('click', () => {
+  const fixed = {};
+  const buffer = [];
+  state.forEach((v, i) => {
+    if (v !== null && v !== 'buffer') fixed[i] = v;
+    else if (v === 'buffer')          buffer.push(i);
+  });
+
+  const payloadCount = state.filter(v => v === null).length;
+  const schema = {
+    schemaVersion: 1,
+    note: "fixed: triangle index → palette color 0-7; buffer: always-white non-data; payload: all remaining triangles (carry encoded data)",
+    fixed,
+    buffer,
+    payloadCount,
+  };
+
+  const out = document.getElementById('schema-output');
+  out.value = JSON.stringify(schema, null, 2);
+  const area = document.getElementById('schema-area');
+  area.style.display = 'flex';
+  out.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+});
+
+document.getElementById('copy-btn').addEventListener('click', () => {
+  navigator.clipboard.writeText(document.getElementById('schema-output').value).then(() => {
+    const btn = document.getElementById('copy-btn');
+    btn.textContent = 'Copied!';
+    btn.style.background = '#147';
+    setTimeout(() => {
+      btn.textContent = 'Copy to clipboard';
+      btn.style.background = '';
+    }, 2000);
+  });
+});
+</script>
+</body>
+</html>

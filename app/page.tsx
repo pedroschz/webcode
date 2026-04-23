@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { loadWebcodeRuntime, type Variant } from "./pyodide-runtime";
+import { HexRenderer, type RGB } from "./HexRenderer";
 
 type Status = "loading" | "ready" | "error";
 
@@ -95,22 +96,29 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 function GeneratePanel({ pyRef, ready, variant }: { pyRef: any; ready: boolean; variant: Variant }) {
   const [url, setUrl] = useState("https://github.com/pedroschz/webcode");
   const [imgSrc, setImgSrc] = useState("");
+  const [hexColors, setHexColors] = useState<RGB[] | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function generate() {
     if (!pyRef.current || busy) return;
-    setBusy(true); setErr(""); setImgSrc("");
+    setBusy(true); setErr(""); setImgSrc(""); setHexColors(null);
     try {
       const py = pyRef.current;
       py.globals.set("_user_url", url);
-      py.globals.set("_user_variant", variant);
-      py.runPython(`wc_encode(_user_url, "/tmp/_out.png", _user_variant)`);
-      const bytes: Uint8Array = py.FS.readFile("/tmp/_out.png");
-      const buf = new Uint8Array(bytes.byteLength);
-      buf.set(bytes);
-      const blob = new Blob([buf], { type: "image/png" });
-      setImgSrc(URL.createObjectURL(blob));
+      if (variant === "hex") {
+        // SVG path: get per-triangle colors directly — no PNG round-trip.
+        const json: string = py.runPython(`wc_hex_colors(_user_url)`);
+        setHexColors(JSON.parse(json) as RGB[]);
+      } else {
+        py.globals.set("_user_variant", variant);
+        py.runPython(`wc_encode(_user_url, "/tmp/_out.png", _user_variant)`);
+        const bytes: Uint8Array = py.FS.readFile("/tmp/_out.png");
+        const buf = new Uint8Array(bytes.byteLength);
+        buf.set(bytes);
+        const blob = new Blob([buf], { type: "image/png" });
+        setImgSrc(URL.createObjectURL(blob));
+      }
     } catch (e: any) {
       setErr(e?.message || String(e));
     } finally {
@@ -143,10 +151,15 @@ function GeneratePanel({ pyRef, ready, variant }: { pyRef: any; ready: boolean; 
         </button>
       </div>
       {err && <p style={{ color: "#c33", fontSize: 13, marginTop: 10 }}>{err}</p>}
+      {hexColors && (
+        <div style={{ marginTop: 20, display: "flex", justifyContent: "center" }}>
+          <HexRenderer colors={hexColors} />
+        </div>
+      )}
       {imgSrc && (
         <div style={{ marginTop: 20, textAlign: "center" }}>
           <img src={imgSrc} alt="webcode" style={{
-            imageRendering: variant === "square" ? "pixelated" : "auto",
+            imageRendering: "pixelated",
             maxWidth: 420, width: "100%",
             border: "1px solid #eee", borderRadius: 8,
           }} />

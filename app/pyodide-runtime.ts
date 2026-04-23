@@ -50,6 +50,9 @@ def wc_encode(url, path, variant):
     mod = sq_ns if variant == "square" else hex_ns
     return mod["encode_url"](url, path)
 
+def wc_hex_colors(url):
+    return hex_ns["encode_url_to_colors"](url)
+
 def wc_decode(path, variant):
     mod = sq_ns if variant == "square" else hex_ns
     return mod["decode_image"](path)
