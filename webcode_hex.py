@@ -467,9 +467,62 @@ def encode_url(url: str, out_path: str, canvas: int = 720) -> None:
     img.save(out_path)
 
 # =========================================================================
-# Decode
+# Decode v2 — robust to perspective warp, color cast, shading gradients,
+# motion/focus blur, JPEG noise, and per-cell corruption.
+#
+# Pipeline (each stage is replaceable in isolation; see _pipeline_trace):
+#   1. Localization
+#      a. Multi-criterion pixel mask (saturated | dark | gray-ring).
+#      b. Explicit gray-ring extraction (outer ring renders at (180,180,180),
+#         a signature no other cell uses), with fallback to the full code
+#         mask when the ring is partially occluded.
+#      c. Convex hull of the selected pixel set, then angular-extrema on
+#         HULL points (not raw pixels) → 6 hex corners. Hull restriction
+#         rejects background clutter and noise outliers.
+#   2. Geometry fit
+#      a. Seed homography from 6 hull corners (DLT).
+#      b. Iteratively refit over all ~200 known-color calibration cells
+#         (42 schema-fixed + 154 white-shim): warp canonical centroid →
+#         observe RGB → use cells whose RGB matches expected palette color
+#         as keypoints for a weighted least-squares re-fit. Reweighted over
+#         2 iterations converges and corrects corner-detection quantization.
+#   3. Sampling
+#      Per-triangle polygon-interior sampling: for each warped triangle,
+#      take the median of N barycentric-distributed interior points. Robust
+#      to (a) small triangles near outer ring where centroid-only can land
+#      on an edge, and (b) JPEG / demosaicing artifacts that concentrate on
+#      pixel boundaries.
+#   4. Color calibration — learned palette centroids
+#      For each of the 8 palette colors, take the mean of observed RGB over
+#      cells known to be that color (from calibration map). This 8-centroid
+#      model absorbs global color cast, white balance, exposure, and a
+#      near-linear gamma. Vastly more robust than per-channel binary
+#      thresholding at a fixed midpoint.
+#   5. Shading correction
+#      Fit a 2nd-order bivariate polynomial per channel to the residuals
+#      of white-shim cells: s(x,y) = a0 + a1 x + a2 y + a3 x² + a4 y² + a5 xy.
+#      Subtract predicted shading from each sample so the downstream
+#      centroid classifier sees a flat illumination field.
+#   6. Classification with soft confidence
+#      For each cell: Euclidean distance to each of 8 shading-corrected
+#      palette centroids. class = argmin. confidence = (2nd_best − best) /
+#      (best + ε). Low confidence → cell is ambiguous.
+#   7. Orientation
+#      Score each of 6 rotations by Σ confidence over cells where the
+#      classification matches the schema-fixed color. Pick highest score.
+#   8. EM refinement (2 iterations)
+#      Re-fit centroids using all classified cells whose confidence exceeds
+#      the mean confidence of calibration cells, then reclassify. Converges
+#      fast because the calibration set is already dense.
+#   9. Erasure-aware Reed-Solomon
+#      Trits below a confidence threshold are mapped to the bytes they
+#      contribute to and marked as erasures via reedsolo's erase_pos.
+#      RS(48,24) corrects up to 24 erasures (vs 12 pure errors), roughly
+#      doubling tolerable corruption.
 # =========================================================================
+
 def _homography(src, dst):
+    """8-point DLT, minimum case (4 src/dst pairs or more)."""
     A, b = [], []
     for (sx, sy), (dx, dy) in zip(src, dst):
         A.append([sx, sy, 1, 0, 0, 0, -dx*sx, -dx*sy]); b.append(dx)
@@ -477,119 +530,428 @@ def _homography(src, dst):
     h, *_ = np.linalg.lstsq(np.array(A), np.array(b), rcond=None)
     return np.array([[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], 1.0]])
 
+def _homography_weighted(src, dst, w):
+    """Overdetermined weighted DLT (same setup as _homography, per-point w)."""
+    A, b = [], []
+    for (sx, sy), (dx, dy), wi in zip(src, dst, w):
+        s = math.sqrt(max(wi, 1e-6))
+        A.append([s*sx, s*sy, s, 0, 0, 0, -s*dx*sx, -s*dx*sy]); b.append(s*dx)
+        A.append([0, 0, 0, s*sx, s*sy, s, -s*dy*sx, -s*dy*sy]); b.append(s*dy)
+    h, *_ = np.linalg.lstsq(np.array(A), np.array(b), rcond=None)
+    return np.array([[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], 1.0]])
+
 def _warp(H, x, y):
     v = H @ np.array([x, y, 1.0])
     return v[0]/v[2], v[1]/v[2]
 
-def _find_hex_corners(img: Image.Image):
-    """Six outer hex corners (x,y) — detects colored, dark, OR gray-border pixels."""
-    arr = np.asarray(img.convert("RGB"), dtype=np.int16)
-    mx = arr.max(axis=2); mn = arr.min(axis=2); sat = mx - mn
-    # Colored OR dark OR off-white gray (the 200-gray border).
-    mask = (sat > 80) | (mx < 80) | ((mx < 230) & (sat < 30))
+def _warp_many(H, pts):
+    """Batch warp — pts: (N,2), returns (N,2)."""
+    ones = np.ones((pts.shape[0], 1), dtype=pts.dtype)
+    hom = np.concatenate([pts, ones], axis=1) @ H.T
+    return hom[:, :2] / hom[:, 2:3]
+
+def _convex_hull(xs, ys):
+    """Andrew's monotone chain. Returns (hx, hy) CCW without duplicate endpoint."""
+    pts = sorted(set(zip(xs.tolist(), ys.tolist())))
+    if len(pts) <= 1:
+        return np.array([p[0] for p in pts]), np.array([p[1] for p in pts])
+    def cross(o, a, b):
+        return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
+    lower = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    hull = lower[:-1] + upper[:-1]
+    return np.array([p[0] for p in hull], dtype=np.float64), np.array([p[1] for p in hull], dtype=np.float64)
+
+def _estimate_background(arr: np.ndarray) -> np.ndarray:
+    """Background RGB via mode of 16³-binned pixels (≤8000 samples)."""
+    H_img, W_img = arr.shape[:2]
+    step_y = max(1, H_img // 90); step_x = max(1, W_img // 90)
+    sp = arr[::step_y, ::step_x].reshape(-1, 3).astype(np.int16)
+    binned = (sp // 16).astype(np.int32)
+    packed = (binned[:, 0] << 16) | (binned[:, 1] << 8) | binned[:, 2]
+    vals, counts = np.unique(packed, return_counts=True)
+    mode = int(vals[int(np.argmax(counts))])
+    br = ((mode >> 16) & 0xFF) * 16 + 8
+    bg = ((mode >> 8) & 0xFF) * 16 + 8
+    bb = (mode & 0xFF) * 16 + 8
+    return np.array([br, bg, bb], dtype=np.float32)
+
+def _mask_via_gradient(arr: np.ndarray, F: int = 8) -> np.ndarray:
+    """Shading-invariant code-pixel mask via block-wise gradient density.
+
+    The hex is densely cellular (many cell boundaries = high gradient), while
+    any smooth background — including steep illumination gradients — has
+    low gradient. Summing |∇| over F×F blocks and thresholding on that
+    block-level edge energy gives a mask that tolerates arbitrary smooth
+    shading, moderate color cast, and partial occlusion.
+    """
+    H_img, W_img = arr.shape[:2]
+    gray = arr.mean(axis=2)
+    gx = np.abs(np.diff(gray, axis=1, prepend=gray[:, :1]))
+    gy = np.abs(np.diff(gray, axis=0, prepend=gray[:1, :]))
+    grad = gx + gy
+    Hb = (H_img // F) * F; Wb = (W_img // F) * F
+    blk = grad[:Hb, :Wb].reshape(Hb // F, F, Wb // F, F).sum(axis=(1, 3))
+    thr = max(float(np.percentile(blk, 70)), float(blk.max()) * 0.05)
+    mask_blk = blk > thr
+    # Upsample block mask to pixel mask (nearest).
+    mask = np.zeros((H_img, W_img), dtype=bool)
+    ys_b, xs_b = np.where(mask_blk)
+    for yb, xb in zip(ys_b, xs_b):
+        mask[yb*F:yb*F+F, xb*F:xb*F+F] = True
+    return mask
+
+def _subpixel_refine_corners(corners, hx, hy, radius: float = 6.0):
+    """Weighted-centroid refinement of each corner using nearby hull points."""
+    refined = []
+    for (cx_c, cy_c) in corners:
+        d2 = (hx - cx_c)**2 + (hy - cy_c)**2
+        w = np.maximum(radius*radius - d2, 0.0)
+        if w.sum() < 1e-6:
+            refined.append((cx_c, cy_c)); continue
+        rx = float((hx * w).sum() / w.sum())
+        ry = float((hy * w).sum() / w.sum())
+        refined.append((rx, ry))
+    return refined
+
+def _corners_from_mask(mask: np.ndarray):
+    """6 corners from a binary mask via convex hull + canonical angular-extrema."""
     ys, xs = np.where(mask)
     if len(ys) < 100:
-        raise ValueError("No code found in image")
+        return None, None, None
+    hx, hy = _convex_hull(xs.astype(np.float64), ys.astype(np.float64))
+    if len(hx) < 6:
+        return None, None, None
     corners = []
     for deg in (30, 90, 150, 210, 270, 330):
         th = math.radians(deg)
-        proj = xs * math.cos(th) - ys * math.sin(th)
+        proj = hx * math.cos(th) - hy * math.sin(th)
         i = int(np.argmax(proj))
-        corners.append((float(xs[i]), float(ys[i])))
-    return corners
+        corners.append((float(hx[i]), float(hy[i])))
+    corners = _subpixel_refine_corners(corners, hx, hy, radius=8.0)
+    return corners, hx, hy
+
+def _find_hex_corner_candidates(img: Image.Image) -> list[list[tuple[float, float]]]:
+    """Produce multiple 6-corner hypotheses using complementary strategies.
+
+    Returns a list of candidate corner-sets; the decoder tries each and
+    keeps the one that maximizes fixed-cell agreement.
+    """
+    arr = np.asarray(img.convert("RGB"), dtype=np.float32)
+    cands: list[list[tuple[float, float]]] = []
+
+    # Strategy A: gradient/texture — invariant to smooth shading.
+    try:
+        m = _mask_via_gradient(arr, F=8)
+        c, _, _ = _corners_from_mask(m)
+        if c is not None: cands.append(c)
+    except Exception:
+        pass
+    # Also try a finer block size (catches small codes).
+    try:
+        m = _mask_via_gradient(arr, F=4)
+        c, _, _ = _corners_from_mask(m)
+        if c is not None: cands.append(c)
+    except Exception:
+        pass
+
+    # Strategy B: mode-bg distance — handles color cast cleanly.
+    try:
+        bg = _estimate_background(arr)
+        dist = np.linalg.norm(arr - bg[None, None, :], axis=2)
+        d_max = float(dist.max())
+        thr = min(120.0, max(40.0, d_max * 0.25))
+        m = dist > thr
+        c, _, _ = _corners_from_mask(m)
+        if c is not None: cands.append(c)
+    except Exception:
+        pass
+
+    # Strategy C: saturation + darkness — handles heavy cast where gray is
+    # ambiguous but colored cells are still distinctive.
+    try:
+        mx = arr.max(axis=2); mn = arr.min(axis=2); sat = mx - mn
+        m = (sat > 60) | (mx < 60)
+        c, _, _ = _corners_from_mask(m)
+        if c is not None: cands.append(c)
+    except Exception:
+        pass
+
+    if not cands:
+        raise ValueError("No code found in image")
+    return cands
+
+def _find_hex_corners(img: Image.Image):
+    """Kept for backwards compatibility — returns the gradient-based corners."""
+    return _find_hex_corner_candidates(img)[0]
+
+def _sample_triangle(arr, tri_pts, H_img, W_img):
+    """Median RGB over a dense barycentric grid inside the (image-space)
+    triangle. Falls back gracefully when the triangle is tiny or clipped."""
+    (x0, y0), (x1, y1), (x2, y2) = tri_pts
+    # 10 barycentric points including interior-weighted centroid.
+    bc = [
+        (1/3, 1/3, 1/3),
+        (1/2, 1/4, 1/4), (1/4, 1/2, 1/4), (1/4, 1/4, 1/2),
+        (3/5, 1/5, 1/5), (1/5, 3/5, 1/5), (1/5, 1/5, 3/5),
+        (0.45, 0.45, 0.10), (0.45, 0.10, 0.45), (0.10, 0.45, 0.45),
+    ]
+    pts = []
+    for a, b, c in bc:
+        ix = a*x0 + b*x1 + c*x2
+        iy = a*y0 + b*y1 + c*y2
+        jx = int(round(ix)); jy = int(round(iy))
+        if 0 <= jx < W_img and 0 <= jy < H_img:
+            pts.append(arr[jy, jx])
+    if not pts:
+        return np.array([127.0, 127.0, 127.0], dtype=np.float32)
+    # Median is robust against spillover from neighboring cells and JPEG.
+    return np.median(np.stack(pts, axis=0), axis=0).astype(np.float32)
+
+def _sample_all(arr, tris_img, H_img, W_img):
+    return np.stack([_sample_triangle(arr, t, H_img, W_img) for t in tris_img], axis=0)
+
+def _fit_shading(samples, white_idxs, centroids_img):
+    """Fit a MULTIPLICATIVE per-channel shading factor s(x,y) from the
+    observed brightness of white-shim cells. The physical model of
+    non-uniform illumination on a flat surface is multiplicative (each
+    cell's reflectance is scaled by local irradiance), so we fit:
+
+        shading(x,y) = Σ c_k · φ_k(x,y)   with basis {1, x, y, x², y², xy}
+
+    normalized so the MEAN white sample divided by the mean shading factor
+    equals identity. The returned callable shade(pts) gives a (N,3)
+    multiplicative factor — callers divide samples by this factor to
+    obtain an illumination-flat image that classifies cleanly.
+    """
+    if len(white_idxs) < 10:
+        def one(_p): return np.ones((_p.shape[0], 3), dtype=np.float32)
+        return one
+    W = np.asarray(white_idxs, dtype=int)
+    pts = centroids_img[W]
+    # Normalize coordinates so polynomial conditioning is stable.
+    cx_n = float(pts[:, 0].mean()); cy_n = float(pts[:, 1].mean())
+    sx_n = float(pts[:, 0].std() + 1e-6); sy_n = float(pts[:, 1].std() + 1e-6)
+    x = (pts[:, 0] - cx_n) / sx_n; y = (pts[:, 1] - cy_n) / sy_n
+    Phi = np.stack([np.ones_like(x), x, y, x*x, y*y, x*y], axis=1)
+    mean_white = samples[W].mean(axis=0, keepdims=True) + 1e-6
+    # Relative factor per white cell: target ≈ 1 everywhere if illumination is flat.
+    target = samples[W] / mean_white
+    coefs, *_ = np.linalg.lstsq(Phi, target, rcond=None)
+    def shade(p):
+        xp = (p[:, 0] - cx_n) / sx_n; yp = (p[:, 1] - cy_n) / sy_n
+        Phi_p = np.stack([np.ones_like(xp), xp, yp, xp*xp, yp*yp, xp*yp], axis=1)
+        f = Phi_p @ coefs
+        # Clamp to a sane range so cells landing outside the white-sample
+        # spatial support don't produce wild factors.
+        return np.clip(f, 0.25, 4.0).astype(np.float32)
+    return shade
+
+def _palette_centroids(samples, cal_map):
+    """8 observed-RGB centroids, one per palette color, from calibration cells."""
+    cents = np.zeros((8, 3), dtype=np.float32)
+    counts = np.zeros(8, dtype=np.int32)
+    for idx, color_idx in cal_map.items():
+        cents[color_idx] += samples[idx]
+        counts[color_idx] += 1
+    # Fill any gap with the palette-true color (should not happen with the
+    # current schema but keeps the classifier well-conditioned).
+    for c in range(8):
+        if counts[c] == 0:
+            cents[c] = np.array(PALETTE[c], dtype=np.float32)
+        else:
+            cents[c] /= counts[c]
+    return cents
+
+def _classify(samples, cents):
+    """Returns (classes[N], confidence[N]). Confidence = margin / best_dist."""
+    # (N, 8) squared distances.
+    d2 = ((samples[:, None, :] - cents[None, :, :]) ** 2).sum(axis=2)
+    d = np.sqrt(d2 + 1e-9)
+    classes = np.argmin(d, axis=1)
+    d_sorted = np.sort(d, axis=1)
+    best = d_sorted[:, 0]; second = d_sorted[:, 1]
+    conf = (second - best) / (best + 10.0)   # +10 keeps confidence finite for near-zero distances
+    return classes.astype(np.int32), conf.astype(np.float32)
+
+def _refit_homography(canon_centroids, img_centroids, classes, cal_map, conf):
+    """Weighted least-squares homography using calibration cells that
+    classified correctly as high-weight keypoints. Caller must pass the
+    CURRENT image-space centroids (from previous H) as img_centroids — we
+    use those positions directly; if they are correct, re-solving
+    reproduces H. The refit helps when the initial corners are noisy and
+    one or two of them land off the true vertex: the dense interior
+    fiducials then anchor H back."""
+    src, dst, w = [], [], []
+    for idx, color_idx in cal_map.items():
+        if classes[idx] != color_idx:
+            continue  # mismatches can't inform geometry
+        src.append(tuple(canon_centroids[idx]))
+        dst.append(tuple(img_centroids[idx]))
+        w.append(float(conf[idx]) + 0.1)
+    if len(src) < 8:
+        return None
+    try:
+        return _homography_weighted(src, dst, w)
+    except Exception:
+        return None
+
+def _trit_erasures(conf, order, payload_idx_list, total_bytes):
+    """Map low-confidence trits to byte-indices for RS erasure decoding.
+
+    payload_idx_list is the list of module indices in payload order
+    (length N_PAYLOAD_MODULES). Only DATA trits (after the 4 length trits)
+    map to the RS block.
+    """
+    data_conf = np.array([conf[i] for i in payload_idx_list[N_LENGTH_MODULES:]],
+                         dtype=np.float32)
+    # Mark up to ECC_BYTES trits with the worst confidence as erasures.
+    # Each trit contributes to 1-2 bytes; we cap total byte erasures at
+    # ECC_BYTES to stay within RS correction capacity.
+    n_mark = min(len(data_conf), ECC_BYTES)
+    if n_mark == 0:
+        return []
+    worst = np.argsort(data_conf)[:n_mark]
+    bytes_erased = set()
+    for trit_k in worst.tolist():
+        b_start = (3 * trit_k) // 8
+        b_end   = (3 * trit_k + 2) // 8
+        for b in range(b_start, b_end + 1):
+            if 0 <= b < total_bytes:
+                bytes_erased.add(b)
+        if len(bytes_erased) >= ECC_BYTES:
+            break
+    return sorted(bytes_erased)[:ECC_BYTES]
+
+def _rs_decode_with_erasures(coded: bytes, erase_pos: list) -> bytes:
+    """Try erasure-aware RS first, fall back to pure-error decode."""
+    codec = _codec(ECC_BYTES)
+    try:
+        out, _, _ = codec.decode(coded, erase_pos=erase_pos)
+        return bytes(out)
+    except _rs.ReedSolomonError:
+        out, _, _ = codec.decode(coded)  # fallback
+        return bytes(out)
 
 def decode_image(path: str) -> str:
     img = Image.open(path)
     arr = np.asarray(img.convert("RGB"), dtype=np.float32)
     H_img, W_img = arr.shape[:2]
 
-    img_corners = _find_hex_corners(img)
+    # Multiple localization strategies; pick whichever produces the best
+    # fixed-cell agreement after running the full classification pipeline.
+    corner_candidates = _find_hex_corner_candidates(img)
 
     R_can = 200.0
-    canon_corners = []
-    for s in range(6):
-        a = math.radians(30 + s * 60)
-        canon_corners.append((R_can * math.cos(a), -R_can * math.sin(a)))
+    canon_corners = [(R_can * math.cos(math.radians(30 + s * 60)),
+                     -R_can * math.sin(math.radians(30 + s * 60)))
+                     for s in range(6)]
     triangles_canon = all_triangles(0.0, 0.0, R_can)
     centroids_canon = np.array([
         [sum(p[0] for p in tri)/3, sum(p[1] for p in tri)/3]
         for (_s, _k, _t, tri) in triangles_canon
-    ])
-    L = layout()
+    ], dtype=np.float64)
+    tri_vertices_canon = [np.array(tri, dtype=np.float64) for (_s, _k, _t, tri) in triangles_canon]
 
-    # Calibration: fixed triangles (known colors) + inner shim (white ref).
-    # Outer ring is excluded — it renders gray for detection, not a palette color.
+    L = layout()
     cal_map: dict[int, int] = dict(L['fixed'])
+    white_shim_idxs: list[int] = []
     for idx in L['shim']:
         if idx not in _OUTER_RING:
             cal_map[idx] = 7  # white
+            white_shim_idxs.append(idx)
 
-    best_score = -1
+    best_score = -1.0
     best_classes = None
+    best_conf = None
 
-    for rot in range(6):
-        rolled = img_corners[rot:] + img_corners[:rot]
-        try:
-            H = _homography(canon_corners, rolled)
-        except Exception:
-            continue
-        samples = np.zeros((N_MODULES, 3), dtype=np.float32)
-        for k in range(N_MODULES):
-            cx_c, cy_c = centroids_canon[k]
-            ix, iy = _warp(H, cx_c, cy_c)
-            acc = np.zeros(3, dtype=np.float32); cnt = 0
-            for dy in (-1, 0, 1):
-                for dx in (-1, 0, 1):
-                    jx, jy = int(round(ix)) + dx, int(round(iy)) + dy
-                    if 0 <= jx < W_img and 0 <= jy < H_img:
-                        acc += arr[jy, jx]; cnt += 1
-            samples[k] = acc / max(cnt, 1)
-        # Calibration: derive channel-high/low from actual palette RGB values.
-        ch_lo = [[], [], []]; ch_hi = [[], [], []]
-        for idx, color_idx in cal_map.items():
-            pr, pg, pb = PALETTE[color_idx]
-            for ch, pv in enumerate((pr, pg, pb)):
-                (ch_hi if pv > 127 else ch_lo)[ch].append(samples[idx, ch])
-        try:
-            thr = [(float(np.mean(ch_hi[ch])) + float(np.mean(ch_lo[ch]))) / 2
-                   for ch in range(3)]
-        except Exception:
-            continue
-        # Build RGB-bit → palette-index lookup for classification.
-        rgb_to_idx: dict[int, int] = {}
-        for pi, (pr, pg, pb) in enumerate(PALETTE):
-            bits = ((1 if pr > 127 else 0) << 2) | ((1 if pg > 127 else 0) << 1) | (1 if pb > 127 else 0)
-            rgb_to_idx[bits] = pi
-        classes = []
-        for k_i in range(N_MODULES):
-            bits = sum((1 << (2 - ch)) for ch in range(3) if samples[k_i, ch] > thr[ch])
-            classes.append(rgb_to_idx.get(bits, 7))
-        # Score by how many fixed modules classify correctly.
-        score = sum(1 for i, c in L['fixed'].items() if classes[i] == c)
-        if score > best_score:
-            best_score = score
-            best_classes = classes
+    def _run(H):
+        """Full classify pipeline for one homography. Returns (classes, conf, samples_flat, centroids_img)."""
+        centroids_img = _warp_many(H, centroids_canon)
+        tris_img = [_warp_many(H, v)[:3] for v in tri_vertices_canon]
+        samples = _sample_all(arr, [t.tolist() for t in tris_img], H_img, W_img)
+        shade_fn = _fit_shading(samples, white_shim_idxs, centroids_img)
+        factor = shade_fn(centroids_img)
+        samples_flat = samples / np.maximum(factor, 0.05)
+        cents = _palette_centroids(samples_flat, cal_map)
+        classes, conf = _classify(samples_flat, cents)
+        return classes, conf, samples_flat, centroids_img
+
+    for img_corners in corner_candidates:
+        for rot in range(6):
+            rolled = img_corners[rot:] + img_corners[:rot]
+            try:
+                H = _homography(canon_corners, rolled)
+            except Exception:
+                continue
+            classes, conf, samples_flat, centroids_img = _run(H)
+            hits = sum(1 for i, c in L['fixed'].items() if classes[i] == c)
+            if hits >= len(L['fixed']) * 0.35:
+                H2 = _refit_homography(centroids_canon, centroids_img, classes, cal_map, conf)
+                if H2 is not None:
+                    classes2, conf2, sf2, ci2 = _run(H2)
+                    hits2 = sum(1 for i, c in L['fixed'].items() if classes2[i] == c)
+                    if hits2 >= hits:
+                        classes, conf, samples_flat, centroids_img = classes2, conf2, sf2, ci2
+                        hits = hits2
+            # EM refinement: expand calibration with high-confidence cells.
+            for _em in range(2):
+                cal_conf = np.array([conf[i] for i in cal_map.keys()])
+                thr_c = float(np.median(cal_conf) * 0.5)
+                ext_map = dict(cal_map)
+                for i in range(N_MODULES):
+                    if i in ext_map or i in _OUTER_RING: continue
+                    if conf[i] >= thr_c:
+                        ext_map[i] = int(classes[i])
+                cents_em = _palette_centroids(samples_flat, ext_map)
+                new_classes, new_conf = _classify(samples_flat, cents_em)
+                new_hits = sum(1 for i, c in L['fixed'].items() if new_classes[i] == c)
+                if new_hits < hits:
+                    break
+                classes, conf = new_classes, new_conf
+                hits = new_hits
+            hits_final = sum(1 for i, c in L['fixed'].items() if classes[i] == c)
+            conf_mass = float(sum(conf[i] for i, c in L['fixed'].items() if classes[i] == c))
+            score = hits_final * 1000.0 + conf_mass
+            if score > best_score:
+                best_score = score
+                best_classes = classes.copy()
+                best_conf = conf.copy()
 
     if best_classes is None:
         raise ValueError("Could not orient hexagon")
-    max_score = len(L['fixed'])
-    if best_score < max_score * 0.6:
-        print(f"[warn] low fixed score ({best_score}/{max_score})", file=sys.stderr)
 
-    # First 4 payload trits = length header (6-bit count stored twice).
-    length_trits = [best_classes[i] for i in L['payload'][:N_LENGTH_MODULES]]
+    # Soft-decision warning based on fixed-cell agreement.
+    fixed_hits = sum(1 for i, c in L['fixed'].items() if best_classes[i] == c)
+    if fixed_hits < len(L['fixed']) * 0.6:
+        print(f"[warn] low fixed score ({fixed_hits}/{len(L['fixed'])})", file=sys.stderr)
+
+    # Length header (first 4 trits, stored twice as 2×6 bits).
+    length_trits = [int(best_classes[i]) for i in L['payload'][:N_LENGTH_MODULES]]
     bits12 = []
     for t in length_trits:
         bits12 += [(t >> 2) & 1, (t >> 1) & 1, t & 1]
     n_symbols = sum(bits12[i] << (5 - i) for i in range(6))
     if n_symbols > 63:
-        n_symbols = sum(bits12[6 + i] << (5 - i) for i in range(6))  # redundant copy
+        n_symbols = sum(bits12[6 + i] << (5 - i) for i in range(6))
     if n_symbols > 63:
         raise ValueError(f"Decoded symbol count {n_symbols} > 63 max")
 
-    data_trits = [best_classes[i] for i in L['payload'][N_LENGTH_MODULES:]]
+    data_trits = [int(best_classes[i]) for i in L['payload'][N_LENGTH_MODULES:]]
     coded = trits_to_bytes(data_trits, TOTAL_BYTES)
-    payload_bytes = rs_decode(coded, ECC_BYTES)
+    erase_pos = _trit_erasures(best_conf, None, L['payload'], TOTAL_BYTES)
+    try:
+        payload_bytes = _rs_decode_with_erasures(coded, erase_pos)
+    except _rs.ReedSolomonError as e:
+        raise ValueError(str(e))
     packed = payload_bytes[:(n_symbols * 6 + 7) // 8]
     symbols = unpack6(packed, n_symbols)
     return decompress(symbols)
