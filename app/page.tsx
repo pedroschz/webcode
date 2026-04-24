@@ -6,6 +6,9 @@ import { HexRenderer, type RGB } from "./HexRenderer";
 
 type Status = "loading" | "ready" | "error";
 
+const serif = "var(--font-serif), Georgia, 'Times New Roman', serif";
+const mono = "var(--font-mono), ui-monospace, monospace";
+
 export default function Home() {
   const [status, setStatus] = useState<Status>("loading");
   const [err, setErr] = useState<string>("");
@@ -25,31 +28,78 @@ export default function Home() {
   }, []);
 
   return (
-    <main style={{ maxWidth: 880, margin: "0 auto", padding: "40px 24px 80px" }}>
-      <header style={{ marginBottom: 32 }}>
-        <h1 style={{ fontSize: 34, margin: 0, letterSpacing: -0.5 }}>Webcode</h1>
-        <p style={{ color: "#555", marginTop: 6, marginBottom: 0 }}>
-          URL-specialized scannable codes. 8-color palette, 6-bit URL alphabet,
-          Reed&ndash;Solomon ECC. Generate one or decode an image.
+    <main style={{ maxWidth: 620, margin: "0 auto", padding: "96px 28px 120px" }}>
+      <header>
+        <h1
+          style={{
+            fontFamily: serif,
+            fontSize: 56,
+            lineHeight: 1,
+            letterSpacing: "-0.02em",
+            margin: 0,
+            fontWeight: 400,
+          }}
+        >
+          Webcode
+        </h1>
+        <p
+          style={{
+            fontFamily: serif,
+            fontStyle: "italic",
+            fontSize: 19,
+            color: "var(--ink-3)",
+            margin: "14px 0 0",
+            lineHeight: 1.4,
+            maxWidth: 480,
+          }}
+        >
+          URL-specialized scannable codes.
         </p>
-        <p style={{ color: "#888", fontSize: 13, marginTop: 8 }}>
-          Runtime: {status === "loading" && "loading Python…"}
-          {status === "ready" && <span style={{ color: "#0a7" }}>ready</span>}
-          {status === "error" && <span style={{ color: "#c33" }}>error: {err}</span>}
+        <p
+          style={{
+            fontSize: 13,
+            color: "var(--ink-3)",
+            margin: "18px 0 0",
+            maxWidth: 520,
+            lineHeight: 1.6,
+          }}
+        >
+          Eight-color palette, six-bit URL alphabet, Reed&ndash;Solomon error
+          correction. Generate a code from a link, or decode one from a photo.
         </p>
       </header>
 
-      <VariantTabs value={variant} onChange={setVariant} />
-      <div style={{ height: 16 }} />
+      <div style={{ height: 80 }} />
+
+      <VariantSelector value={variant} onChange={setVariant} />
+      <div style={{ height: 28 }} />
 
       <GeneratePanel pyRef={pyRef} ready={status === "ready"} variant={variant} />
-      <div style={{ height: 40 }} />
+
+      <div style={{ height: 96 }} />
+
       <DecodePanel pyRef={pyRef} ready={status === "ready"} />
 
-      <footer style={{ marginTop: 64, color: "#999", fontSize: 12, textAlign: "center" }}>
-        Based on the 2023 paper &ldquo;Decoding Efficiency: The Next Generation
-        of Scannable Systems&rdquo; &mdash; architecture updated 2026. &middot;{" "}
-        <a href="https://github.com/pedroschz/webcode" style={{ color: "#999" }}>
+      <div style={{ height: 96 }} />
+
+      <footer
+        style={{
+          borderTop: "1px solid var(--line)",
+          paddingTop: 20,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          color: "var(--ink-4)",
+          fontSize: 12,
+          letterSpacing: "0.02em",
+        }}
+      >
+        <StatusDot status={status} err={err} />
+        <a
+          href="https://github.com/pedroschz/webcode"
+          className="wc-link"
+          style={{ color: "var(--ink-4)", borderBottomColor: "transparent" }}
+        >
           source
         </a>
       </footer>
@@ -57,43 +107,86 @@ export default function Home() {
   );
 }
 
-function VariantTabs({ value, onChange }: { value: Variant; onChange: (v: Variant) => void }) {
-  const tab = (v: Variant, label: string, sub: string) => (
-    <button
-      key={v}
-      onClick={() => onChange(v)}
-      style={{
-        flex: 1, padding: "12px 16px", textAlign: "left",
-        background: value === v ? "white" : "transparent",
-        border: value === v ? "1px solid #111" : "1px solid #e5e5e5",
-        borderRadius: 10, cursor: "pointer",
-      }}
-    >
-      <div style={{ fontSize: 14, fontWeight: 600 }}>{label}</div>
-      <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>{sub}</div>
-    </button>
-  );
+function StatusDot({ status, err }: { status: Status; err: string }) {
+  const color =
+    status === "ready" ? "var(--ok)" : status === "error" ? "var(--err)" : "var(--ink-4)";
+  const label =
+    status === "ready"
+      ? "ready"
+      : status === "error"
+      ? `error — ${err.slice(0, 60)}`
+      : "loading runtime";
   return (
-    <div style={{ display: "flex", gap: 8 }}>
-      {tab("square", "Square 12×12", "144 modules · 28 data bytes · simpler geometry")}
-      {tab("hex", "Hexagonal 216-triangle", "paper's original shape · MP alphabet · 40 data bytes")}
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+      <span
+        aria-hidden
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          background: color,
+          display: "inline-block",
+          transition: "background .3s ease",
+        }}
+      />
+      <span>{label}</span>
+    </span>
+  );
+}
+
+function VariantSelector({
+  value,
+  onChange,
+}: {
+  value: Variant;
+  onChange: (v: Variant) => void;
+}) {
+  return (
+    <div>
+      <SectionLabel>Shape</SectionLabel>
+      <div style={{ display: "flex", marginTop: 4 }}>
+        <button
+          className="wc-segment"
+          data-active={value === "square"}
+          onClick={() => onChange("square")}
+        >
+          Square
+        </button>
+        <button
+          className="wc-segment"
+          data-active={value === "hex"}
+          onClick={() => onChange("hex")}
+        >
+          Hexagonal
+        </button>
+      </div>
+      <p
+        style={{
+          fontSize: 12,
+          color: "var(--ink-4)",
+          margin: "10px 0 0",
+          lineHeight: 1.5,
+          fontStyle: "italic",
+          fontFamily: serif,
+        }}
+      >
+        {value === "square"
+          ? "12 × 12 grid. 144 modules, 28 data bytes."
+          : "216-triangle hexagon. Paper's original shape, 40 data bytes."}
+      </p>
     </div>
   );
 }
 
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section style={{
-      background: "white", border: "1px solid #e5e5e5", borderRadius: 12,
-      padding: 24,
-    }}>
-      <h2 style={{ margin: 0, fontSize: 20 }}>{title}</h2>
-      <div style={{ marginTop: 16 }}>{children}</div>
-    </section>
-  );
-}
-
-function GeneratePanel({ pyRef, ready, variant }: { pyRef: any; ready: boolean; variant: Variant }) {
+function GeneratePanel({
+  pyRef,
+  ready,
+  variant,
+}: {
+  pyRef: any;
+  ready: boolean;
+  variant: Variant;
+}) {
   const [url, setUrl] = useState("https://github.com/pedroschz/webcode");
   const [imgSrc, setImgSrc] = useState("");
   const [hexColors, setHexColors] = useState<RGB[] | null>(null);
@@ -102,12 +195,14 @@ function GeneratePanel({ pyRef, ready, variant }: { pyRef: any; ready: boolean; 
 
   async function generate() {
     if (!pyRef.current || busy) return;
-    setBusy(true); setErr(""); setImgSrc(""); setHexColors(null);
+    setBusy(true);
+    setErr("");
+    setImgSrc("");
+    setHexColors(null);
     try {
       const py = pyRef.current;
       py.globals.set("_user_url", url);
       if (variant === "hex") {
-        // SVG path: get per-triangle colors directly — no PNG round-trip.
         const json: string = py.runPython(`wc_hex_colors(_user_url)`);
         setHexColors(JSON.parse(json) as RGB[]);
       } else {
@@ -126,51 +221,89 @@ function GeneratePanel({ pyRef, ready, variant }: { pyRef: any; ready: boolean; 
     }
   }
 
+  const hasResult = imgSrc || hexColors;
+
   return (
-    <Panel title="Generate">
-      <div style={{ display: "flex", gap: 8 }}>
-        <input
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://…"
-          style={{
-            flex: 1, padding: "10px 12px", borderRadius: 8,
-            border: "1px solid #ddd", fontSize: 14, fontFamily: "inherit",
-          }}
-        />
+    <section>
+      <SectionLabel>Link</SectionLabel>
+      <input
+        className="wc-url-input"
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") generate();
+        }}
+        placeholder="https://…"
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
+      />
+
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "flex-end",
+          marginTop: 20,
+        }}
+      >
         <button
+          className="wc-btn"
           onClick={generate}
           disabled={!ready || busy || !url}
-          style={{
-            padding: "10px 18px", borderRadius: 8, border: "none",
-            background: ready && !busy ? "#111" : "#888", color: "white",
-            fontSize: 14, cursor: ready && !busy ? "pointer" : "default",
-          }}
         >
           {busy ? "Generating…" : "Generate"}
         </button>
       </div>
-      {err && <p style={{ color: "#c33", fontSize: 13, marginTop: 10 }}>{err}</p>}
-      {hexColors && (
-        <div style={{ marginTop: 20, display: "flex", justifyContent: "center" }}>
-          <HexRenderer colors={hexColors} />
+
+      {err && (
+        <p
+          className="wc-fade-in"
+          style={{ color: "var(--err)", fontSize: 13, marginTop: 16 }}
+        >
+          {err}
+        </p>
+      )}
+
+      {hasResult && (
+        <div
+          className="wc-fade-in"
+          style={{ marginTop: 48, display: "flex", flexDirection: "column", alignItems: "center" }}
+        >
+          {hexColors && <HexRenderer colors={hexColors} />}
+          {imgSrc && (
+            <img
+              src={imgSrc}
+              alt="webcode"
+              style={{
+                imageRendering: "pixelated",
+                width: "100%",
+                maxWidth: 380,
+                display: "block",
+              }}
+            />
+          )}
+          <a
+            href={imgSrc || undefined}
+            download={imgSrc ? `webcode-${variant}.png` : undefined}
+            onClick={(e) => {
+              if (!imgSrc) e.preventDefault();
+            }}
+            className="wc-link"
+            style={{
+              marginTop: 28,
+              fontSize: 12,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              color: imgSrc ? "var(--ink-3)" : "var(--ink-4)",
+              pointerEvents: imgSrc ? "auto" : "none",
+              borderBottomColor: "transparent",
+            }}
+          >
+            {imgSrc ? "Download PNG" : "Rendered as SVG"}
+          </a>
         </div>
       )}
-      {imgSrc && (
-        <div style={{ marginTop: 20, textAlign: "center" }}>
-          <img src={imgSrc} alt="webcode" style={{
-            imageRendering: "pixelated",
-            maxWidth: 420, width: "100%",
-            border: "1px solid #eee", borderRadius: 8,
-          }} />
-          <div style={{ marginTop: 8 }}>
-            <a href={imgSrc} download={`webcode-${variant}.png`} style={{ fontSize: 13 }}>
-              Download PNG
-            </a>
-          </div>
-        </div>
-      )}
-    </Panel>
+    </section>
   );
 }
 
@@ -183,7 +316,10 @@ function DecodePanel({ pyRef, ready }: { pyRef: any; ready: boolean }) {
 
   async function handleFile(f: File) {
     if (!pyRef.current || busy) return;
-    setBusy(true); setErr(""); setResult(""); setDetected("");
+    setBusy(true);
+    setErr("");
+    setResult("");
+    setDetected("");
     try {
       const ab = await f.arrayBuffer();
       setPreview(URL.createObjectURL(f));
@@ -192,7 +328,6 @@ function DecodePanel({ pyRef, ready }: { pyRef: any; ready: boolean }) {
       const path = `/tmp/_in.${ext}`;
       py.FS.writeFile(path, new Uint8Array(ab));
       py.globals.set("_user_path", path);
-      // wc_decode_auto returns (url, variant_name) as a Python tuple → PyProxy
       const tuple: any = py.runPython(`wc_decode_auto(_user_path)`);
       const url = tuple.get(0);
       const variantName = tuple.get(1);
@@ -207,44 +342,116 @@ function DecodePanel({ pyRef, ready }: { pyRef: any; ready: boolean }) {
   }
 
   return (
-    <Panel title="Decode">
-      <p style={{ color: "#666", fontSize: 13, marginTop: 0, marginBottom: 10 }}>
-        Upload any webcode image (square or hex — variant auto-detected).
-      </p>
-      <input
-        type="file"
-        accept="image/*"
-        disabled={!ready || busy}
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) handleFile(f);
+    <section>
+      <SectionLabel>Or decode</SectionLabel>
+      <p
+        style={{
+          fontFamily: serif,
+          fontStyle: "italic",
+          fontSize: 16,
+          color: "var(--ink-3)",
+          margin: "4px 0 20px",
+          lineHeight: 1.4,
         }}
-        style={{ fontSize: 14 }}
-      />
-      <p style={{ color: "#888", fontSize: 12, marginTop: 6, marginBottom: 0 }}>
-        For photos: plain background, roughly centered, mild rotation OK.
+      >
+        Upload a photo of a webcode — shape detected automatically.
       </p>
-      {preview && (
-        <div style={{ marginTop: 16 }}>
-          <img src={preview} alt="input" style={{
-            maxWidth: 200, borderRadius: 6, border: "1px solid #eee",
-          }} />
+
+      <label className="wc-file" style={{ position: "relative" }}>
+        {busy ? "Decoding…" : preview ? "Upload another" : "Choose image"}
+        <input
+          type="file"
+          accept="image/*"
+          disabled={!ready || busy}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) handleFile(f);
+            e.currentTarget.value = "";
+          }}
+        />
+      </label>
+
+      {err && (
+        <p
+          className="wc-fade-in"
+          style={{ color: "var(--err)", fontSize: 13, marginTop: 16 }}
+        >
+          {err}
+        </p>
+      )}
+
+      {(preview || result) && (
+        <div
+          className="wc-fade-in"
+          style={{
+            marginTop: 28,
+            display: "grid",
+            gridTemplateColumns: "96px 1fr",
+            gap: 20,
+            alignItems: "start",
+          }}
+        >
+          {preview && (
+            <img
+              src={preview}
+              alt="input"
+              style={{
+                width: 96,
+                height: 96,
+                objectFit: "cover",
+                borderRadius: 4,
+                display: "block",
+              }}
+            />
+          )}
+          {result && (
+            <div>
+              <div
+                style={{
+                  fontSize: 11,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "var(--ink-4)",
+                  marginBottom: 6,
+                }}
+              >
+                Decoded {detected && <span>· {detected}</span>}
+              </div>
+              <a
+                href={result}
+                target="_blank"
+                rel="noreferrer"
+                className="wc-link"
+                style={{
+                  fontFamily: mono,
+                  fontSize: 14,
+                  wordBreak: "break-all",
+                  color: "var(--ink)",
+                  borderBottomColor: "var(--line-2)",
+                }}
+              >
+                {result}
+              </a>
+            </div>
+          )}
         </div>
       )}
-      {busy && <p style={{ fontSize: 13, marginTop: 10 }}>Decoding…</p>}
-      {err && <p style={{ color: "#c33", fontSize: 13, marginTop: 10 }}>Error: {err}</p>}
-      {result && (
-        <div style={{ marginTop: 16 }}>
-          <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>
-            Decoded URL {detected && <span>({detected} variant)</span>}:
-          </div>
-          <a href={result} target="_blank" rel="noreferrer" style={{
-            fontSize: 15, wordBreak: "break-all",
-          }}>
-            {result}
-          </a>
-        </div>
-      )}
-    </Panel>
+    </section>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        fontSize: 11,
+        letterSpacing: "0.12em",
+        textTransform: "uppercase",
+        color: "var(--ink-4)",
+        fontWeight: 500,
+      }}
+    >
+      {children}
+    </div>
   );
 }
